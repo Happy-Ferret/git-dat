@@ -8,6 +8,7 @@ var Dat = require('dat-js')
 var duplexify = require('duplexify')
 var fs = require('fs')
 var path = require('path')
+var once = require('once')
 
 var dat = null
 if (process.argv[2] === 'dat' && /^dat:/.test(process.argv[3])) {
@@ -31,21 +32,26 @@ function handle (link) {
 
 function protocol (dat) {
   var fetching = null
-  return combine(split(), through(write))
+  return combine(split(), through(write, end))
+  function end () { dat.close() }
 
   function write (buf, enc, next) {
+    next = once(next)
     var line = buf.toString()
     console.error('line=', line)
     if (line === 'capabilities') {
       next(null, 'fetch\noption\npush\n\n')
     } else if (line === 'list') {
       var s = dat.archive.list()
+      var offset = 0
       s.pipe(to.obj(function (entry) {
-        dat.archive.metadata.head(entry.block, function (err, r) {
+        dat.archive.metadata.head(offset, function (err, r) {
           if (err) return next(err)
-          var refs = [ r.toString('hex') + ' ' + 'refs/heads/master' ]
+          var refs = [ r.toString('hex').slice(0,40)
+            + ' ' + 'refs/heads/master' ]
           next(null, refs.join('\n') + '\n\n')
         })
+        offset += entry.block
         s.destroy()
       }))
     } else if (/^option\b/.test(line)) {
@@ -56,11 +62,36 @@ function protocol (dat) {
       fetching[parts[1]] = parts[2]
       next()
     } else if (line === '' && fetching) {
-      var s = dat.archive.list()
-      s.pipe(to.obj(function (entry, enc, snext) {
-        console.error(entry)
-        snext()
-      }))
+      var s = dat.archive.list({ live: false })
+      s.pipe(to.obj(sWrite, sEnd))
+      var refs = fetching
+      var blocks = {}, offset = 0
+      function sWrite (entry, enc, snext) {
+        var o = offset
+        offset += entry.blocks
+        dat.archive.metadata.head(o, function (err, r) {
+          if (err) return next(err)
+          var hash = r.toString('hex').slice(0,40) // truncate to git's length
+          if (refs[hash]) {
+            entry.block = o
+            blocks[hash] = entry
+          }
+          snext()
+        })
+      }
+      function sEnd () {
+        var pending = 1
+        Object.keys(blocks).forEach(function (hash) {
+          var entry = blocks[hash]
+          dat.archive.createFileReadStream(entry)
+            .pipe(fs.createWriteStream(entry.name))
+            .once('finish', function () {
+              if (--pending === 0) done()
+            })
+        })
+        if (--pending === 0) done()
+        function done () { next(null, '\n') }
+      }
       fetching = null
     } else next()
   }

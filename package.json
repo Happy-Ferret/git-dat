@@ -9,6 +9,7 @@
     "dat-js": "^3.8.0",
     "discovery-swarm": "^4.0.2",
     "duplexify": "^3.5.0",
+    "once": "^1.4.0",
     "split2": "^2.1.0",
     "stream-combiner2": "^1.1.1",
     "through2": "^2.0.1"
